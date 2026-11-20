@@ -5,6 +5,7 @@ API_TOKEN = os.environ["GROWATT_TOKEN"]
 DEVICE_SN = os.environ["GROWATT_SN"]
 TG_TOKEN = os.environ["TG_TOKEN"]
 TG_CHAT_IDS = [cid.strip() for cid in os.environ["TG_CHAT_ID"].split(",") if cid.strip()]
+IS_MANUAL = os.environ.get("EVENT_NAME") == "workflow_dispatch"
 STATE_FILE = "state.txt"
 
 BATTERY_STATUSES = {2}
@@ -34,7 +35,6 @@ def get_inverter_status():
     vbat = round(float(data.get("vBat", 0)), 2)
     load_w = int(float(data.get("outPutPower", 0)))
 
-    # Перевірка внутрішніх помилок інвертора та BMS
     inv_err_code = int(data.get("errorCode", 0))
     inv_err_text = data.get("errorText", "")
     bms_err = int(data.get("bmsError", 0))
@@ -65,11 +65,9 @@ def main():
     try:
         current_mode, soc, details_block, err_key, err_desc = get_inverter_status()
     except Exception as e:
-        # Сповіщення, якщо сервер Growatt не відповідає або впав запит
         send_telegram(f"🛠 *Збій моніторингу Growatt:*\n`{e}`")
         raise
 
-    # Формат state.txt: mode:alert_level:err_key (наприклад, "battery:100:0")
     last_mode = None
     last_alert = 100
     last_err = "0"
@@ -90,7 +88,7 @@ def main():
     elif err_key == "0" and last_err != "0":
         send_telegram(f"✅ *Помилку інвертора усунуто!* Робота в нормі.\n\n{details_block}")
 
-    # 2. Сповіщення при перемиканні мережа <-> батарея
+    # 2. Сповіщення при зміні режиму, першому запуску або примусовому Run workflow
     if last_mode and current_mode != last_mode:
         if current_mode == "battery":
             send_telegram(f"🚨 *Зникла мережа! Інвертор перейшов на батарею.*\n\n{details_block}")
@@ -102,7 +100,10 @@ def main():
             send_telegram(f"ℹ️ *Зміна режиму інвертора*\n\n{details_block}")
     elif not last_mode:
         state_ua = "від батареї 🔋" if current_mode == "battery" else "від мережі ⚡"
-        send_telegram(f"✅ *Моніторинг оновлено.* Зараз інвертор працює {state_ua}.\n\n{details_block}")
+        send_telegram(f"✅ *Моніторинг запущено.* Зараз інвертор працює {state_ua}.\n\n{details_block}")
+    elif IS_MANUAL:
+        state_ua = "від батареї 🔋" if current_mode == "battery" else "від мережі ⚡"
+        send_telegram(f"🔄 *Ручна перевірка:* інвертор працює {state_ua}.\n\n{details_block}")
 
     # 3. Попередження при падінні заряду АКБ нижче 50% та 30%
     current_alert = last_alert
