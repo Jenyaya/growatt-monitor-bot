@@ -11,13 +11,54 @@ STATE_FILE = "state.txt"
 BATTERY_STATUSES = {2}
 GRID_STATUSES = {1, 5, 6}
 
-def send_telegram(text):
+
+def send_telegram(text, target_chat_id=None):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    for chat_id in TG_CHAT_IDS:
+    recipients = [target_chat_id] if target_chat_id else TG_CHAT_IDS
+    for chat_id in recipients:
         try:
-            requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=15)
+            res = requests.post(
+                url,
+                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                timeout=15,
+            ).json()
+            if not res.get("ok"):
+                print(f"Помилка Telegram API для чату {chat_id}: {res}")
         except Exception as e:
             print(f"Помилка відправки в чат {chat_id}: {e}")
+
+
+def check_status_command(last_update_id):
+    """Перевіряє вхідні повідомлення та пости в каналі на наявність команди /status або 'статус'."""
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
+    try:
+        res = requests.get(url, params={"offset": last_update_id + 1, "timeout": 5}, timeout=15).json()
+    except Exception as e:
+        print(f"Помилка читання getUpdates: {e}")
+        return last_update_id, None
+
+    if not res.get("ok"):
+        return last_update_id, None
+
+    new_update_id = last_update_id
+    requester_chat_id = None
+
+    for item in res.get("result", []):
+        upd_id = item.get("update_id", 0)
+        if upd_id > new_update_id:
+            new_update_id = upd_id
+
+        # Підтримка і звичайних повідомлень/груп (message), і постів у каналі (channel_post)
+        msg = item.get("message") or item.get("channel_post") or {}
+        text = (msg.get("text") or "").strip().lower()
+        chat_id = str(msg.get("chat", {}).get("id", ""))
+
+        if text.startswith("/status") or text == "статус":
+            if not TG_CHAT_IDS or chat_id in TG_CHAT_IDS:
+                requester_chat_id = chat_id
+
+    return new_update_id, requester_chat_id
+
 
 def get_inverter_status():
     url = "https://openapi.growatt.com/v1/device/storage/storage_last_data"
@@ -61,6 +102,7 @@ def get_inverter_status():
 
     return mode, soc, details_block, err_key, err_desc
 
+
 def main():
     try:
         current_mode, soc, details_block, err_key, err_desc = get_inverter_status()
@@ -68,9 +110,11 @@ def main():
         send_telegram(f"🛠 *Збій моніторингу Growatt:*\n`{e}`")
         raise
 
+    # Формат state.txt: mode:alert_level:err_key:last_update_id
     last_mode = None
     last_alert = 100
     last_err = "0"
+    last_update_id = 0
 
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -81,6 +125,11 @@ def main():
                 last_alert = int(parts[1])
             if len(parts) >= 3:
                 last_err = parts[2]
+            if len(parts) >= 4 and parts[3].isdigit():
+                last_update_id = int(parts[3])
+
+    # Перевіряємо чергу команд Telegram (/status або "статус")
+    new_update_id, requester_chat_id = check_status_command(last_update_id)
 
     # 1. Сповіщення про критичні помилки інвертора / BMS
     if err_key != "0" and err_key != last_err:
@@ -88,7 +137,7 @@ def main():
     elif err_key == "0" and last_err != "0":
         send_telegram(f"✅ *Помилку інвертора усунуто!* Робота в нормі.\n\n{details_block}")
 
-    # 2. Сповіщення при зміні режиму, першому запуску або примусовому Run workflow
+    # 2. Сповіщення при зміні режиму, першому запуску, ручному Run workflow або запиті статусу
     if last_mode and current_mode != last_mode:
         if current_mode == "battery":
             send_telegram(f"🚨 *Зникла мережа! Інвертор перейшов на батарею.*\n\n{details_block}")
@@ -104,6 +153,12 @@ def main():
     elif IS_MANUAL:
         state_ua = "від батареї 🔋" if current_mode == "battery" else "від мережі ⚡"
         send_telegram(f"🔄 *Ручна перевірка:* інвертор працює {state_ua}.\n\n{details_block}")
+    elif requester_chat_id:
+        state_ua = "від батареї 🔋" if current_mode == "battery" else "від мережі ⚡"
+        send_telegram(
+            f"📊 *Поточний стан:* інвертор працює {state_ua}.\n\n{details_block}",
+            target_chat_id=requester_chat_id,
+        )
 
     # 3. Попередження при падінні заряду АКБ нижче 50% та 30%
     current_alert = last_alert
@@ -118,7 +173,8 @@ def main():
         current_alert = 100
 
     with open(STATE_FILE, "w") as f:
-        f.write(f"{current_mode}:{current_alert}:{err_key}")
+        f.write(f"{current_mode}:{current_alert}:{err_key}:{new_update_id}")
+
 
 if __name__ == "__main__":
     main()
