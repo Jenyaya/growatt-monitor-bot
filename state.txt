@@ -1,1 +1,1 @@
-battery
+battery:100
