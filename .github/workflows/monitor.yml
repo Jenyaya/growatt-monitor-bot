@@ -22,6 +22,7 @@ jobs:
           GROWATT_SN: ${{ secrets.GROWATT_SN }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          EVENT_NAME: ${{ github.event_name }}
         run: python bot.py
       - name: Save state
         run: |
