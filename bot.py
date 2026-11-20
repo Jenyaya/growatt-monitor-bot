@@ -4,7 +4,7 @@ import requests
 API_TOKEN = os.environ["GROWATT_TOKEN"]
 DEVICE_SN = os.environ["GROWATT_SN"]
 TG_TOKEN = os.environ["TG_TOKEN"]
-TG_CHAT_ID = os.environ["TG_CHAT_ID"]
+TG_CHAT_IDS = [cid.strip() for cid in os.environ["TG_CHAT_ID"].split(",") if cid.strip()]
 STATE_FILE = "state.txt"
 
 BATTERY_STATUSES = {2}
@@ -12,7 +12,11 @@ GRID_STATUSES = {1, 5, 6}
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=15)
+    for chat_id in TG_CHAT_IDS:
+        try:
+            requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=15)
+        except Exception as e:
+            print(f"Помилка відправки в чат {chat_id}: {e}")
 
 def get_inverter_status():
     url = "https://openapi.growatt.com/v1/device/storage/storage_last_data"
@@ -20,7 +24,7 @@ def get_inverter_status():
     res = requests.post(url, headers=headers, data={"storage_sn": DEVICE_SN}, timeout=15).json()
 
     if res.get("error_code") != 0:
-        raise RuntimeError(f"Growatt API error: {res}")
+        raise RuntimeError(f"Помилка Growatt API: {res.get('error_msg')} (код {res.get('error_code')})")
 
     data = res.get("data", {})
     status = int(data.get("status", -1))
@@ -29,6 +33,18 @@ def get_inverter_status():
     soc = int(float(data.get("capacity", 0)))
     vbat = round(float(data.get("vBat", 0)), 2)
     load_w = int(float(data.get("outPutPower", 0)))
+
+    # Перевірка внутрішніх помилок інвертора та BMS
+    inv_err_code = int(data.get("errorCode", 0))
+    inv_err_text = data.get("errorText", "")
+    bms_err = int(data.get("bmsError", 0))
+
+    if inv_err_code != 0 or bms_err != 0:
+        err_key = f"{inv_err_code}_{bms_err}"
+        err_desc = f"Інвертор: {inv_err_code} ({inv_err_text}), BMS: {bms_err}"
+    else:
+        err_key = "0"
+        err_desc = ""
 
     if status in BATTERY_STATUSES or (vac == 0 and "discharge" in status_text.lower()):
         mode = "battery"
@@ -43,22 +59,38 @@ def get_inverter_status():
     line4 = f"📊 Статус: {status} ({status_text})"
     details_block = f"{line1}\n{line2}\n{line3}\n{line4}"
 
-    return mode, soc, details_block
+    return mode, soc, details_block, err_key, err_desc
 
 def main():
-    current_mode, soc, details_block = get_inverter_status()
+    try:
+        current_mode, soc, details_block, err_key, err_desc = get_inverter_status()
+    except Exception as e:
+        # Сповіщення, якщо сервер Growatt не відповідає або впав запит
+        send_telegram(f"🛠 *Збій моніторингу Growatt:*\n`{e}`")
+        raise
 
+    # Формат state.txt: mode:alert_level:err_key (наприклад, "battery:100:0")
     last_mode = None
     last_alert = 100
+    last_err = "0"
+
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
-            raw = f.read().strip()
-            if ":" in raw:
-                last_mode, alert_part = raw.split(":", 1)
-                last_alert = int(alert_part) if alert_part.isdigit() else 100
-            elif raw:
-                last_mode = raw
+            parts = f.read().strip().split(":")
+            if len(parts) >= 1 and parts[0]:
+                last_mode = parts[0]
+            if len(parts) >= 2 and parts[1].isdigit():
+                last_alert = int(parts[1])
+            if len(parts) >= 3:
+                last_err = parts[2]
 
+    # 1. Сповіщення про критичні помилки інвертора / BMS
+    if err_key != "0" and err_key != last_err:
+        send_telegram(f"🔥 *АВАРІЯ / ПОМИЛКА ІНВЕРТОРА!*\n{err_desc}\n\n{details_block}")
+    elif err_key == "0" and last_err != "0":
+        send_telegram(f"✅ *Помилку інвертора усунуто!* Робота в нормі.\n\n{details_block}")
+
+    # 2. Сповіщення при перемиканні мережа <-> батарея
     if last_mode and current_mode != last_mode:
         if current_mode == "battery":
             send_telegram(f"🚨 *Зникла мережа! Інвертор перейшов на батарею.*\n\n{details_block}")
@@ -72,6 +104,7 @@ def main():
         state_ua = "від батареї 🔋" if current_mode == "battery" else "від мережі ⚡"
         send_telegram(f"✅ *Моніторинг оновлено.* Зараз інвертор працює {state_ua}.\n\n{details_block}")
 
+    # 3. Попередження при падінні заряду АКБ нижче 50% та 30%
     current_alert = last_alert
     if current_mode == "battery":
         if soc < 30 and last_alert > 30:
@@ -84,7 +117,7 @@ def main():
         current_alert = 100
 
     with open(STATE_FILE, "w") as f:
-        f.write(f"{current_mode}:{current_alert}")
+        f.write(f"{current_mode}:{current_alert}:{err_key}")
 
 if __name__ == "__main__":
     main()
