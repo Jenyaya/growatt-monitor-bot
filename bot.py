@@ -9,6 +9,8 @@ STATE_FILE = "state.txt"
 
 BATTERY_STATUSES = {2}
 GRID_STATUSES = {1, 5, 6}
+HIGH_LOAD_THRESHOLD_W = 2500
+HIGH_LOAD_RESET_W = 1700
 
 
 def send_telegram(text, target_chat_id=None):
@@ -98,20 +100,22 @@ def get_inverter_status():
     line4 = f"📊 Статус: {status} ({status_text})"
     details_block = f"{line1}\n{line2}\n{line3}\n{line4}"
 
-    return mode, soc, details_block, err_key, err_desc
+    return mode, soc, load_w, details_block, err_key, err_desc
 
 
 def main():
     try:
-        current_mode, soc, details_block, err_key, err_desc = get_inverter_status()
+        current_mode, soc, load_w, details_block, err_key, err_desc = get_inverter_status()
     except Exception as e:
         send_telegram(f"🛠 *Збій моніторингу Growatt:*\n`{e}`")
         raise
 
+    # Формат state.txt: mode:alert_level:err_key:last_update_id:load_state
     last_mode = None
     last_alert = 100
     last_err = "0"
     last_update_id = 0
+    last_load_state = "normal"  # normal | grid_high | battery_high
 
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -124,6 +128,8 @@ def main():
                 last_err = parts[2]
             if len(parts) >= 4 and parts[3].isdigit():
                 last_update_id = int(parts[3])
+            if len(parts) >= 5 and parts[4]:
+                last_load_state = parts[4]
 
     new_update_id, requester_chat_id = check_status_command(last_update_id)
 
@@ -153,7 +159,24 @@ def main():
             target_chat_id=requester_chat_id,
         )
 
-    # 3. Попередження при падінні заряду АКБ нижче 50% та 30%
+    # 3. Контроль високого навантаження (> 4000 W)
+    current_load_state = last_load_state
+    if load_w > HIGH_LOAD_THRESHOLD_W:
+        if current_mode == "battery" and last_load_state != "battery_high":
+            send_telegram(
+                f"🚨🆘 *КРИТИЧНЕ ПЕРЕВАНТАЖЕННЯ ВІД БАТАРЕЇ: {load_w} W!*\n"
+                f"Навантаження перевищило 4 кВт під час роботи від АКБ — терміново вимкніть потужні прилади!\n\n{details_block}"
+            )
+            current_load_state = "battery_high"
+        elif current_mode != "battery" and last_load_state == "normal":
+            send_telegram(
+                f"⚠️⚡ *Високе навантаження: {load_w} W* (понад 4 кВт від мережі).\n\n{details_block}"
+            )
+            current_load_state = "grid_high"
+    elif load_w <= HIGH_LOAD_RESET_W:
+        current_load_state = "normal"
+
+    # 4. Попередження при падінні заряду АКБ нижче 50% та 30%
     current_alert = last_alert
     if current_mode == "battery":
         if soc < 30 and last_alert > 30:
@@ -166,7 +189,7 @@ def main():
         current_alert = 100
 
     with open(STATE_FILE, "w") as f:
-        f.write(f"{current_mode}:{current_alert}:{err_key}:{new_update_id}")
+        f.write(f"{current_mode}:{current_alert}:{err_key}:{new_update_id}:{current_load_state}")
 
 
 if __name__ == "__main__":
