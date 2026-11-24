@@ -1,1 +1,1 @@
-battery:100:0:930972142:normal
+other_10:100:0:930972142:normal
