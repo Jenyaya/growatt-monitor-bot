@@ -9,8 +9,8 @@ STATE_FILE = "state.txt"
 
 BATTERY_STATUSES = {2}
 GRID_STATUSES = {1, 5, 6, 8, 9, 10, 11}
-HIGH_LOAD_THRESHOLD_W = 4000
-HIGH_LOAD_RESET_W = 3700
+HIGH_LOAD_THRESHOLD_W = 2500
+HIGH_LOAD_RESET_W = 1700
 
 
 def send_telegram(text, target_chat_id=None):
