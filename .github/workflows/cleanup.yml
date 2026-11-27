@@ -1,0 +1,16 @@
+name: Cleanup Logs
+on:
+  workflow_dispatch:
+permissions:
+  actions: write
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete all old runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list --repo ${{ github.repository }} --limit 2500 --json databaseId -q '.[].databaseId' | while read id; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$id" --silent && echo "Deleted $id"
+          done
