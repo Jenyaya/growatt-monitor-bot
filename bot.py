@@ -78,7 +78,7 @@ def get_inverter_status():
 
     data = res.get("data", {})
         
-    print("DEBUG SAFE RESPONSE:", {k: "***" if any(s in k.lower() for s in ("sn", "serial", "datalog")) else v for k, v in data.items()})
+    #print("DEBUG SAFE RESPONSE:", {k: "***" if any(s in k.lower() for s in ("sn", "serial", "datalog")) else v for k, v in data.items()})
 
     status = int(data.get("status", -1))
     status_text = data.get("SPF5000StatusText") or data.get("statusText", "")
