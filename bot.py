@@ -69,6 +69,7 @@ def get_inverter_status():
         raise RuntimeError(f"Помилка Growatt API: {res.get('error_msg')} (код {res.get('error_code')})")
 
     data = res.get("data", {})
+    print("DEBUG GROWATT KEYS:", {k: v for k, v in data.items() if "v" in k.lower() or "ac" in k.lower() or "grid" in k.lower()})
     status = int(data.get("status", -1))
     status_text = data.get("SPF5000StatusText") or data.get("statusText", "")
 
