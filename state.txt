@@ -1,1 +1,1 @@
-battery:100:0:930972153:normal
+grid:100:0:930972153:normal
