@@ -8,9 +8,9 @@ TG_CHAT_IDS = [cid.strip() for cid in os.environ["TG_CHAT_ID"].split(",") if cid
 STATE_FILE = "state.txt"
 
 BATTERY_STATUSES = {2}
-GRID_STATUSES = {1, 5, 6}
-HIGH_LOAD_THRESHOLD_W = 2500
-HIGH_LOAD_RESET_W = 1700
+GRID_STATUSES = {1, 5, 6, 8, 9, 10, 11}
+HIGH_LOAD_THRESHOLD_W = 3000
+HIGH_LOAD_RESET_W = 1500
 
 
 def send_telegram(text, target_chat_id=None):
@@ -71,7 +71,16 @@ def get_inverter_status():
     data = res.get("data", {})
     status = int(data.get("status", -1))
     status_text = data.get("SPF5000StatusText") or data.get("statusText", "")
-    vac = round(float(data.get("vac", 0)), 1)
+
+    # Перебираємо можливі поля вхідної напруги мережі для серії SPF
+    raw_vac = 0.0
+    for key in ("vAcInput", "gridVolt", "vac1", "acInVolt", "vac"):
+        val = data.get(key)
+        if val is not None and float(val) > 0:
+            raw_vac = float(val)
+            break
+    vac = round(raw_vac, 1)
+
     soc = int(float(data.get("capacity", 0)))
     vbat = round(float(data.get("vBat", 0)), 2)
     load_w = int(float(data.get("outPutPower", 0)))
@@ -110,12 +119,11 @@ def main():
         send_telegram(f"🛠 *Збій моніторингу Growatt:*\n`{e}`")
         raise
 
-    # Формат state.txt: mode:alert_level:err_key:last_update_id:load_state
     last_mode = None
     last_alert = 100
     last_err = "0"
     last_update_id = 0
-    last_load_state = "normal"  # normal | grid_high | battery_high
+    last_load_state = "normal"
 
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -139,7 +147,7 @@ def main():
     elif err_key == "0" and last_err != "0":
         send_telegram(f"✅ *Помилку інвертора усунуто!* Робота в нормі.\n\n{details_block}")
 
-    # 2. Сповіщення при зміні режиму, першому запуску або запиті статусу в чаті/каналі
+    # 2. Сповіщення при зміні режиму, першому запуску або запиті статусу
     if last_mode and current_mode != last_mode:
         if current_mode == "battery":
             send_telegram(f"🚨 *Зникла мережа! Інвертор перейшов на батарею.*\n\n{details_block}")
@@ -165,12 +173,12 @@ def main():
         if current_mode == "battery" and last_load_state != "battery_high":
             send_telegram(
                 f"🚨🆘 *КРИТИЧНЕ ПЕРЕВАНТАЖЕННЯ ВІД БАТАРЕЇ: {load_w} W!*\n"
-                f"Навантаження перевищило 4 кВт під час роботи від АКБ — терміново вимкніть потужні прилади!\n\n{details_block}"
+                f"Навантаження перевищило {HIGH_LOAD_THRESHOLD_W} кВт під час роботи від АКБ — терміново вимкніть потужні прилади!\n\n{details_block}"
             )
             current_load_state = "battery_high"
         elif current_mode != "battery" and last_load_state == "normal":
             send_telegram(
-                f"⚠️⚡ *Високе навантаження: {load_w} W* (понад 4 кВт від мережі).\n\n{details_block}"
+                f"⚠️⚡ *Високе навантаження: {load_w} W* (понад {HIGH_LOAD_THRESHOLD_W} кВт від мережі).\n\n{details_block}"
             )
             current_load_state = "grid_high"
     elif load_w <= HIGH_LOAD_RESET_W:
