@@ -96,9 +96,11 @@ def get_inverter_status():
         err_key = "0"
         err_desc = ""
 
-    if status in BATTERY_STATUSES or (vac == 0 and "discharge" in status_text.lower()):
+    pac_in = float(data.get("pAcInPut", 0))
+
+    if status in BATTERY_STATUSES or "discharge" in status_text.lower() or (vac == 0 and pac_in == 0):
         mode = "battery"
-    elif status in GRID_STATUSES or vac > 170:
+    elif status in GRID_STATUSES or (vac > 170 and pac_in > 0):
         mode = "grid"
     else:
-        mode = f
+        mode = f"other_{status}"
