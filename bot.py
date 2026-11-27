@@ -10,7 +10,7 @@ STATE_FILE = "state.txt"
 BATTERY_STATUSES = {2}
 GRID_STATUSES = {1, 5, 6, 8, 9, 10, 11}
 HIGH_LOAD_THRESHOLD_W = 3000
-HIGH_LOAD_RESET_W = 1500
+HIGH_LOAD_RESET_W = 1700
 
 
 def send_telegram(text, target_chat_id=None):
@@ -60,6 +60,22 @@ def check_status_command(last_update_id):
     return new_update_id, requester_chat_id
 
 
+def get_grid_voltage(headers):
+    """Отримує вхідну напругу мережі (vacr / vac) через ендпоінт 4.3.8 inverter/last_new_data."""
+    url = "https://openapi.growatt.com/v1/device/inverter/last_new_data"
+    try:
+        res = requests.get(url, headers=headers, params={"inverter_sn": DEVICE_SN}, timeout=15).json()
+        if res.get("error_code") == 0:
+            inv_data = res.get("data", {})
+            for key in ("vacr", "vac", "vAcInput", "gridVolt"):
+                val = inv_data.get(key)
+                if val is not None and float(val) > 0:
+                    return round(float(val), 1)
+    except Exception as e:
+        print(f"Помилка читання inverter/last_new_data: {e}")
+    return 0.0
+
+
 def get_inverter_status():
     url = "https://openapi.growatt.com/v1/device/storage/storage_last_data"
     headers = {"token": API_TOKEN}
@@ -69,18 +85,18 @@ def get_inverter_status():
         raise RuntimeError(f"Помилка Growatt API: {res.get('error_msg')} (код {res.get('error_code')})")
 
     data = res.get("data", {})
-    print("DEBUG GROWATT KEYS:", {k: v for k, v in data.items() if "v" in k.lower() or "ac" in k.lower() or "grid" in k.lower()})
     status = int(data.get("status", -1))
     status_text = data.get("SPF5000StatusText") or data.get("statusText", "")
 
-    # Перебираємо можливі поля вхідної напруги мережі для серії SPF
-    raw_vac = 0.0
-    for key in ("vAcInput", "gridVolt", "vac1", "acInVolt", "vac"):
+    vac = 0.0
+    for key in ("vacr", "vac", "vAcInput", "gridVolt"):
         val = data.get(key)
         if val is not None and float(val) > 0:
-            raw_vac = float(val)
+            vac = round(float(val), 1)
             break
-    vac = round(raw_vac, 1)
+
+    if vac == 0.0:
+        vac = get_grid_voltage(headers)
 
     soc = int(float(data.get("capacity", 0)))
     vbat = round(float(data.get("vBat", 0)), 2)
@@ -168,18 +184,19 @@ def main():
             target_chat_id=requester_chat_id,
         )
 
-    # 3. Контроль високого навантаження (> 4000 W)
+    # 3. Контроль високого навантаження (> HIGH_LOAD_THRESHOLD_W)
+    threshold_kw = f"{HIGH_LOAD_THRESHOLD_W / 1000:g}"
     current_load_state = last_load_state
     if load_w > HIGH_LOAD_THRESHOLD_W:
         if current_mode == "battery" and last_load_state != "battery_high":
             send_telegram(
                 f"🚨🆘 *КРИТИЧНЕ ПЕРЕВАНТАЖЕННЯ ВІД БАТАРЕЇ: {load_w} W!*\n"
-                f"Навантаження перевищило {HIGH_LOAD_THRESHOLD_W} кВт під час роботи від АКБ — терміново вимкніть потужні прилади!\n\n{details_block}"
+                f"Навантаження перевищило {threshold_kw} кВт під час роботи від АКБ — терміново вимкніть потужні прилади!\n\n{details_block}"
             )
             current_load_state = "battery_high"
         elif current_mode != "battery" and last_load_state == "normal":
             send_telegram(
-                f"⚠️⚡ *Високе навантаження: {load_w} W* (понад {HIGH_LOAD_THRESHOLD_W} кВт від мережі).\n\n{details_block}"
+                f"⚠️⚡ *Високе навантаження: {load_w} W* (понад {threshold_kw} кВт від мережі).\n\n{details_block}"
             )
             current_load_state = "grid_high"
     elif load_w <= HIGH_LOAD_RESET_W:
