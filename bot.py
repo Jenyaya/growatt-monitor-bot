@@ -73,12 +73,13 @@ def get_inverter_status():
     headers = {"token": API_TOKEN}
     res = requests.post(url, headers=headers, data={"storage_sn": DEVICE_SN}, timeout=15).json()
     
-    print("DEBUG SAFE RESPONSE:", {k: "***" if any(s in k.lower() for s in ("sn", "serial", "datalog")) else v for k, v in data.items()})
-    
     if res.get("error_code") != 0:
         raise RuntimeError(f"Помилка Growatt API: {res.get('error_msg')} (код {res.get('error_code')})")
 
     data = res.get("data", {})
+        
+    print("DEBUG SAFE RESPONSE:", {k: "***" if any(s in k.lower() for s in ("sn", "serial", "datalog")) else v for k, v in data.items()})
+
     status = int(data.get("status", -1))
     status_text = data.get("SPF5000StatusText") or data.get("statusText", "")
 
